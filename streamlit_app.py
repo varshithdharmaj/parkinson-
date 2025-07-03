@@ -1,102 +1,105 @@
 # streamlit_app.py
 import streamlit as st
-import numpy as np
 import pandas as pd
+import numpy as np
 import pickle
-import easyocr
-import re
+import pytesseract
 from PIL import Image
+import re
 import plotly.graph_objects as go
 
-# Load model and OCR
-model = pickle.load(open('parkinson_model.pkl', 'rb'))
-reader = easyocr.Reader(['en'], gpu=False)
+# Optional: set path to tesseract binary (customize this path if needed)
+# pytesseract.pytesseract.tesseract_cmd = r'/usr/bin/tesseract'
 
-# Set Streamlit config
+# Load models
+model_6 = pickle.load(open("parkinson_model_6.pkl", "rb"))
+model_22 = pickle.load(open("parkinson_model_22.pkl", "rb"))
+
+features_6 = ['fo', 'fhi', 'flo', 'jitter_percent', 'rap', 'ppe']
+features_22 = features_6 + [f'feature_{i}' for i in range(7, 23)]
+
 st.set_page_config(page_title="Parkinson's Predictor", layout="centered")
-st.title("🧠 Parkinson's Detection from Voice Parameters")
-st.markdown("Choose an input method and analyze the risk of Parkinson's disease.")
+st.title("🧠 Parkinson's Disease Predictor")
 
-# Initialize
-values = {}
-text = ""
+# Model selector
+model_type = st.radio("Select Model:", ["6-feature model", "22-feature model"])
 
-# Selection Mode
-upload_mode = st.radio("Select Input Method", ["Image Upload (OCR)", "CSV Upload", "Text Box Input"])
+# Input method selector
+input_mode = st.selectbox("Choose Input Method:", 
+    ["Upload CSV", "Manual Text Input", "Upload Image (OCR)" if model_type == "6-feature model" else "Upload Image (OCR) (Disabled)"]
+)
 
-# OCR Mode
-if upload_mode == "Image Upload (OCR)":
-    uploaded = st.file_uploader("📷 Upload Report Image", type=['png', 'jpg', 'jpeg'])
+# --- CSV Upload ---
+if input_mode == "Upload CSV":
+    uploaded = st.file_uploader("📄 Upload CSV file", type=["csv"])
     if uploaded:
-        img = Image.open(uploaded)
+        df = pd.read_csv(uploaded)
+        st.dataframe(df)
+
+        required_features = features_6 if model_type == "6-feature model" else features_22
+        if all(f in df.columns for f in required_features):
+            X = df[required_features].iloc[-1:].values
+            model = model_6 if model_type == "6-feature model" else model_22
+            prediction = model.predict(X)[0]
+            st.success(f"✅ Prediction: **{'Parkinson\'s Likely' if prediction == 1 else 'Parkinson\'s Unlikely'}**")
+            
+            fig = go.Figure(data=[go.Bar(x=required_features, y=X.flatten())])
+            fig.update_layout(title="📊 Feature Values")
+            st.plotly_chart(fig)
+        else:
+            st.error("❌ Required features not found in the uploaded file.")
+
+# --- Manual Text Input ---
+elif input_mode == "Manual Text Input":
+    st.info("Enter values for each feature below:")
+
+    required_features = features_6 if model_type == "6-feature model" else features_22
+    input_vals = []
+    for f in required_features:
+        val = st.text_input(f"{f}", key=f)
+        try:
+            input_vals.append(float(val))
+        except:
+            input_vals.append(None)
+
+    if st.button("Predict"):
+        if None in input_vals:
+            st.error("⚠️ Please enter valid numeric values for all features.")
+        else:
+            model = model_6 if model_type == "6-feature model" else model_22
+            X = np.array(input_vals).reshape(1, -1)
+            prediction = model.predict(X)[0]
+            st.success(f"🔍 Prediction: **{'Parkinson\'s Likely' if prediction == 1 else 'Parkinson\'s Unlikely'}**")
+
+            fig = go.Figure(data=[go.Bar(x=required_features, y=X.flatten())])
+            fig.update_layout(title="📊 Feature Values")
+            st.plotly_chart(fig)
+
+# --- OCR Input for 6-Feature Model Only ---
+elif input_mode.startswith("Upload Image") and model_type == "6-feature model":
+    image = st.file_uploader("🖼️ Upload image with 6 feature values (in order)", type=["png", "jpg", "jpeg"])
+    if image:
+        img = Image.open(image)
         st.image(img, caption="Uploaded Image", use_column_width=True)
-        results = reader.readtext(np.array(img), detail=0)
-        text = ' '.join(results)
 
-# Text Box Input
-elif upload_mode == "Text Box Input":
-    text = st.text_area("📝 Paste text from the report:")
-    
-# CSV Upload
-elif upload_mode == "CSV Upload":
-    csv_file = st.file_uploader("📄 Upload CSV with feature columns", type=["csv"])
-    if csv_file:
-        df = pd.read_csv(csv_file)
-        st.dataframe(df.head())
-        if df.shape[1] >= 6:
-            latest = df.iloc[-1]
-            values = {
-                'fo': latest.get('fo', 0.0),
-                'fhi': latest.get('fhi', 0.0),
-                'flo': latest.get('flo', 0.0),
-                'jitter_percent': latest.get('jitter_percent', 0.0),
-                'rap': latest.get('rap', 0.0),
-                'ppe': latest.get('ppe', 0.0)
-            }
+        try:
+            text = pytesseract.image_to_string(img)
+            st.text_area("📋 Extracted Text from Image", text, height=150)
 
-# Pattern Matching
-def find(pattern):
-    match = re.search(pattern, text)
-    return float(match.group(1)) if match else None
+            values = re.findall(r"[-+]?\d*\.\d+|\d+", text)
+            values = list(map(float, values))
 
-if upload_mode in ["Image Upload (OCR)", "Text Box Input"] and text:
-    patterns = {
-        'fo': r'Fo\(Hz\)[^\d]*([\d.]+)',
-        'fhi': r'Fhi\(Hz\)[^\d]*([\d.]+)',
-        'flo': r'Flo\(Hz\)[^\d]*([\d.]+)',
-        'jitter_percent': r'Jitter\(.*?%\)[^\d]*([\d.]+)',
-        'rap': r'RAP[^\d]*([\d.]+)',
-        'ppe': r'PPE[^\d]*([\d.]+)'
-    }
-    values = {k: find(p) for k, p in patterns.items()}
-    st.info("📄 Extracted OCR/Text Features:")
-    for k, v in values.items():
-        st.write(f"{k.upper()}: {v}")
+            if len(values) >= 6:
+                X = np.array(values[:6]).reshape(1, -1)
+                prediction = model_6.predict(X)[0]
+                st.success(f"🔍 Prediction: **{'Parkinson\'s Likely' if prediction == 1 else 'Parkinson\'s Unlikely'}**")
 
-# Input Form (editable)
-fo = st.number_input("Fo", value=values.get('fo', 0.0), step=0.1)
-fhi = st.number_input("Fhi", value=values.get('fhi', 0.0), step=0.1)
-flo = st.number_input("Flo", value=values.get('flo', 0.0), step=0.1)
-jitter = st.number_input("Jitter(%)", value=values.get('jitter_percent', 0.0), step=0.001)
-rap = st.number_input("RAP", value=values.get('rap', 0.0), step=0.001)
-ppe = st.number_input("PPE", value=values.get('ppe', 0.0), step=0.001)
-
-features = np.array([[fo, fhi, flo, jitter, rap, ppe]])
-
-if st.button("🔍 Predict"):
-    prediction = model.predict(features)[0]
-    st.success("✅ Parkinson's Unlikely" if prediction == 0 else "⚠️ Parkinson's Likely!")
-
-    # Visualization
-    labels = ['Fo', 'Fhi', 'Flo', 'Jitter(%)', 'RAP', 'PPE']
-    raw_values = [fo, fhi, flo, jitter, rap, ppe]
-    scaled = [v / m for v, m in zip(raw_values, [300, 400, 300, 1.0, 0.2, 1.0])]
-
-    fig_radar = go.Figure()
-    fig_radar.add_trace(go.Scatterpolar(r=scaled, theta=labels, fill='toself', name="Features"))
-    fig_radar.update_layout(title="🧭 Feature Radar Chart", polar=dict(radialaxis=dict(range=[0, 1])))
-    st.plotly_chart(fig_radar)
-
-    fig_bar = go.Figure([go.Bar(x=labels, y=raw_values)])
-    fig_bar.update_layout(title="📊 Raw Feature Values")
-    st.plotly_chart(fig_bar)
+                fig = go.Figure(data=[go.Bar(x=features_6, y=X.flatten())])
+                fig.update_layout(title="📊 Feature Values (from OCR)")
+                st.plotly_chart(fig)
+            else:
+                st.warning("❗ OCR failed to extract enough numeric values (need 6).")
+        except pytesseract.pytesseract.TesseractNotFoundError:
+            st.error("❌ Tesseract-OCR not found. Please install it or set `tesseract_cmd` path.")
+        except Exception as e:
+            st.error(f"❌ OCR processing failed: {str(e)}")
