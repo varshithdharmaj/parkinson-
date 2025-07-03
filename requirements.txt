@@ -1,0 +1,7 @@
+streamlit
+numpy
+pillow
+easyocr
+plotly
+scikit-learn
+torch
