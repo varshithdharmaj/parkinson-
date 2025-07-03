@@ -10,7 +10,6 @@ import plotly.graph_objects as go
 model = pickle.load(open('parkinson_model.pkl', 'rb'))
 
 st.set_page_config(page_title="Parkinson’s Detection", layout="centered")
-
 st.title("🧠 Parkinson’s Disease Detection")
 st.write("Upload patient's voice report or enter values manually to detect Parkinson’s")
 
@@ -27,7 +26,7 @@ if uploaded_file:
     reader = easyocr.Reader(['en'], gpu=False)
     result = reader.readtext(np.array(image), detail=0)
     extracted_text = ' '.join(result)
-    
+
     # Extract features using regex
     def extract_value(pattern, text):
         match = re.search(pattern, text)
@@ -68,19 +67,38 @@ input_data = np.array([[fo, fhi, flo, jitter_percent, rap, ppe]])
 # --- PREDICTION ---
 if st.button("🔍 Predict"):
     prediction = model.predict(input_data)
-    
+
+    # Display result
     if prediction[0] == 1:
         st.error("⚠️ The patient is likely to have Parkinson’s disease.")
     else:
         st.success("✅ The patient is unlikely to have Parkinson’s disease.")
 
-    # --- VISUALIZATION ---
-    st.markdown("### 📈 Feature Visualization")
-    features = ["Fo", "Fhi", "Flo", "Jitter(%)", "RAP", "PPE"]
-    values = input_data[0]
+    # --- RADAR CHART ---
+    labels = ['MDVP:Fo(Hz)', 'MDVP:Fhi(Hz)', 'MDVP:Flo(Hz)', 'MDVP:Jitter(%)', 'MDVP:RAP', 'PPE']
+    values = [fo, fhi, flo, jitter_percent, rap, ppe]
+    max_vals = [300, 400, 300, 1.0, 0.2, 1.0]  # Normalization reference
+    scaled_values = [v / mv if mv != 0 else 0 for v, mv in zip(values, max_vals)]
 
-    fig = go.Figure(data=[
-        go.Bar(name='Values', x=features, y=values, marker_color='lightskyblue')
+    radar_fig = go.Figure()
+    radar_fig.add_trace(go.Scatterpolar(
+        r=scaled_values,
+        theta=labels,
+        fill='toself',
+        name='Patient Input',
+        line=dict(color='deepskyblue')
+    ))
+    radar_fig.update_layout(
+        polar=dict(radialaxis=dict(visible=True, range=[0, 1])),
+        showlegend=True,
+        title="📈 Voice Feature Profile (Radar Chart)"
+    )
+    st.plotly_chart(radar_fig)
+
+    # --- BAR CHART ---
+    st.markdown("### 📊 Feature Value Comparison")
+    bar_fig = go.Figure(data=[
+        go.Bar(name='Values', x=labels, y=values, marker_color='lightskyblue')
     ])
-    fig.update_layout(title="Patient's Feature Values", yaxis_title="Value", xaxis_title="Feature")
-    st.plotly_chart(fig)
+    bar_fig.update_layout(title="Patient's Feature Values", yaxis_title="Value", xaxis_title="Feature")
+    st.plotly_chart(bar_fig)
